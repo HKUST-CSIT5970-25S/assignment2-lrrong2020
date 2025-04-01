@@ -36,64 +36,98 @@ public class BigramFrequencyStripes extends Configured implements Tool {
 			.getLogger(BigramFrequencyStripes.class);
 
 	/*
-	 * Mapper: emits <word, stripe> where stripe is a hash map
+	 * Mapper: emits word -> stripe of (nextWord, 1) pairs
 	 */
 	private static class MyMapper extends
 			Mapper<LongWritable, Text, Text, HashMapStringIntWritable> {
-
-		// Reuse objects to save overhead of object creation.
-		private static final Text KEY = new Text();
-		private static final HashMapStringIntWritable STRIPE = new HashMapStringIntWritable();
+		private static final Text WORD = new Text();
 
 		@Override
 		public void map(LongWritable key, Text value, Context context)
 				throws IOException, InterruptedException {
-			String line = ((Text) value).toString();
-			String[] words = line.trim().split("\\s+");
+			String line = value.toString();
+			String[] tokens = line.trim().toLowerCase().split("\\s+");
 
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			if (tokens.length < 2) return;
+
+			for (int i = 0; i < tokens.length - 1; i++) {
+				String word = tokens[i];
+				String nextWord = tokens[i + 1];
+
+				// Emit current word -> (nextWord, 1)
+				WORD.set(word);
+				HashMapStringIntWritable stripes = new HashMapStringIntWritable();
+				stripes.increment(nextWord, 1);
+
+				// Also add a special count for the total
+				stripes.increment("", 1);
+				context.write(WORD, stripes);
+			}
+
+			// Don't forget the last word
+			WORD.set(tokens[tokens.length - 1]);
+			HashMapStringIntWritable stripes = new HashMapStringIntWritable();
+			stripes.increment("", 1);
+			context.write(WORD, stripes);
 		}
 	}
 
 	/*
-	 * TODO: write your reducer to aggregate all stripes associated with each key
+	 * Combiner: combines stripes with the same key
+	 */
+	private static class MyCombiner extends
+			Reducer<Text, HashMapStringIntWritable, Text, HashMapStringIntWritable> {
+		@Override
+		public void reduce(Text key, Iterable<HashMapStringIntWritable> values, Context context)
+				throws IOException, InterruptedException {
+			HashMapStringIntWritable combined = new HashMapStringIntWritable();
+			for (HashMapStringIntWritable value : values) {
+				combined.plus(value);
+			}
+			context.write(key, combined);
+		}
+	}
+
+	/*
+	 * Reducer: calculate relative frequencies from stripes
 	 */
 	private static class MyReducer extends
-			Reducer<Text, HashMapStringIntWritable, PairOfStrings, FloatWritable> {
-
-		// Reuse objects.
-		private final static HashMapStringIntWritable SUM_STRIPES = new HashMapStringIntWritable();
-		private final static PairOfStrings BIGRAM = new PairOfStrings();
-		private final static FloatWritable FREQ = new FloatWritable();
+			Reducer<Text, HashMapStringIntWritable, Text, Text> {
+		private static final Text RESULT_KEY = new Text();
+		private static final Text RESULT_VALUE = new Text();
 
 		@Override
-		public void reduce(Text key,
-				Iterable<HashMapStringIntWritable> stripes, Context context)
+		public void reduce(Text key, Iterable<HashMapStringIntWritable> values, Context context)
 				throws IOException, InterruptedException {
-			/*
-			 * TODO: Your implementation goes here.
-			 */
-		}
-	}
+			HashMapStringIntWritable combined = new HashMapStringIntWritable();
+			for (HashMapStringIntWritable value : values) {
+				combined.plus(value);
+			}
 
-	/*
-	 * TODO: Write your combiner to aggregate all stripes with the same key
-	 */
-	private static class MyCombiner
-			extends
-			Reducer<Text, HashMapStringIntWritable, Text, HashMapStringIntWritable> {
-		// Reuse objects.
-		private final static HashMapStringIntWritable SUM_STRIPES = new HashMapStringIntWritable();
+			// Get total count for this word (using empty string as special key)
+			int total = 0;
+			if (combined.containsKey("")) {
+				total = combined.get("");
+			}
 
-		@Override
-		public void reduce(Text key,
-				Iterable<HashMapStringIntWritable> stripes, Context context)
-				throws IOException, InterruptedException {
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			// Output total count for this word
+			RESULT_KEY.set(key.toString());
+			RESULT_VALUE.set(String.valueOf((double) total));
+			context.write(RESULT_KEY, RESULT_VALUE);
+
+			// Output relative frequencies for each successor
+			for (Map.Entry<String, Integer> entry : combined.entrySet()) {
+				String nextWord = entry.getKey();
+				// Skip the special total count entry
+				if (nextWord.isEmpty()) continue;
+
+				int count = entry.getValue();
+				double relativeFreq = (double) count / total;
+
+				RESULT_KEY.set(key.toString() + "\t" + nextWord);
+				RESULT_VALUE.set(String.valueOf(relativeFreq));
+				context.write(RESULT_KEY, RESULT_VALUE);
+			}
 		}
 	}
 
@@ -165,8 +199,8 @@ public class BigramFrequencyStripes extends Configured implements Tool {
 
 		job.setMapOutputKeyClass(Text.class);
 		job.setMapOutputValueClass(HashMapStringIntWritable.class);
-		job.setOutputKeyClass(PairOfStrings.class);
-		job.setOutputValueClass(FloatWritable.class);
+		job.setOutputKeyClass(Text.class);
+		job.setOutputValueClass(Text.class);
 
 		/*
 		 * A MapReduce program consists of four components: a mapper, a reducer,

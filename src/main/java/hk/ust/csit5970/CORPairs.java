@@ -5,6 +5,7 @@ import org.apache.commons.cli.Options;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.*;
+import org.apache.hadoop.io.DoubleWritable;
 import org.apache.hadoop.io.FloatWritable;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
@@ -23,7 +24,6 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.*;
 
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -37,12 +37,16 @@ import java.util.HashMap;
  */
 public class CORPairs extends Configured implements Tool {
 	private static final Logger LOG = Logger.getLogger(CORPairs.class);
+	private static final String TEMP_OUTPUT = "temp_output";
 
 	/*
-	 * TODO: Write your first-pass Mapper here.
+	 * First-pass Mapper: counts word frequencies
 	 */
 	private static class CORMapper1 extends
 			Mapper<LongWritable, Text, Text, IntWritable> {
+		private static final Text WORD = new Text();
+		private static final IntWritable COUNT = new IntWritable();
+		
 		@Override
 		public void map(LongWritable key, Text value, Context context)
 				throws IOException, InterruptedException {
@@ -50,57 +54,110 @@ public class CORPairs extends Configured implements Tool {
 			// Please use this tokenizer! DO NOT implement a tokenizer by yourself!
 			String clean_doc = value.toString().replaceAll("[^a-z A-Z]", " ");
 			StringTokenizer doc_tokenizer = new StringTokenizer(clean_doc);
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			
+			// Count each word in the document
+			while (doc_tokenizer.hasMoreTokens()) {
+				String word = doc_tokenizer.nextToken().toLowerCase();
+				if (word_set.containsKey(word)) {
+					word_set.put(word, word_set.get(word) + 1);
+				} else {
+					word_set.put(word, 1);
+				}
+			}
+			
+			// Emit each word with its count
+			for (Map.Entry<String, Integer> entry : word_set.entrySet()) {
+				WORD.set(entry.getKey());
+				COUNT.set(entry.getValue());
+				context.write(WORD, COUNT);
+			}
 		}
 	}
 
 	/*
-	 * TODO: Write your first-pass reducer here.
+	 * First-pass reducer: aggregates word counts
 	 */
 	private static class CORReducer1 extends
 			Reducer<Text, IntWritable, Text, IntWritable> {
+		private static final IntWritable SUM = new IntWritable();
+		
 		@Override
 		public void reduce(Text key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			int sum = 0;
+			for (IntWritable value : values) {
+				sum += value.get();
+			}
+			SUM.set(sum);
+			context.write(key, SUM);
 		}
 	}
 
 
 	/*
-	 * TODO: Write your second-pass Mapper here.
+	 * Second-pass Mapper: emits word pairs for all co-occurring words
 	 */
 	public static class CORPairsMapper2 extends Mapper<LongWritable, Text, PairOfStrings, IntWritable> {
+		private static final IntWritable ONE = new IntWritable(1);
+		private static final PairOfStrings PAIR = new PairOfStrings();
+		
 		@Override
 		protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
 			// Please use this tokenizer! DO NOT implement a tokenizer by yourself!
-			StringTokenizer doc_tokenizer = new StringTokenizer(value.toString().replaceAll("[^a-z A-Z]", " "));
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			String clean_doc = value.toString().replaceAll("[^a-z A-Z]", " ");
+			StringTokenizer doc_tokenizer = new StringTokenizer(clean_doc);
+			
+			// Find unique words in the line
+			Set<String> uniqueWords = new HashSet<String>();
+			while (doc_tokenizer.hasMoreTokens()) {
+				uniqueWords.add(doc_tokenizer.nextToken().toLowerCase());
+			}
+			
+			// Skip if only one or zero words
+			if (uniqueWords.size() <= 1) {
+				return;
+			}
+			
+			// Create a sorted list of unique words
+			List<String> sortedWords = new ArrayList<String>(uniqueWords);
+			Collections.sort(sortedWords);
+			
+			// Emit each word pair (in alphabetical order)
+			for (int i = 0; i < sortedWords.size(); i++) {
+				for (int j = i + 1; j < sortedWords.size(); j++) {
+					String word1 = sortedWords.get(i);
+					String word2 = sortedWords.get(j);
+					
+					// Ensure word1 is alphabetically smaller than word2
+					PAIR.set(word1, word2);
+					context.write(PAIR, ONE);
+				}
+			}
 		}
 	}
 
 	/*
-	 * TODO: Write your second-pass Combiner here.
+	 * Second-pass Combiner: combines counts for the same word pair
 	 */
 	private static class CORPairsCombiner2 extends Reducer<PairOfStrings, IntWritable, PairOfStrings, IntWritable> {
+		private static final IntWritable SUM = new IntWritable();
+		
 		@Override
 		protected void reduce(PairOfStrings key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			int sum = 0;
+			for (IntWritable value : values) {
+				sum += value.get();
+			}
+			SUM.set(sum);
+			context.write(key, SUM);
 		}
 	}
 
 	/*
-	 * TODO: Write your second-pass Reducer here.
+	 * Second-pass Reducer: calculates correlation coefficients
 	 */
 	public static class CORPairsReducer2 extends Reducer<PairOfStrings, IntWritable, PairOfStrings, DoubleWritable> {
 		private final static Map<String, Integer> word_total_map = new HashMap<String, Integer>();
+		private static final DoubleWritable CORRELATION = new DoubleWritable();
 
 		/*
 		 * Preload the middle result file.
@@ -137,14 +194,31 @@ public class CORPairs extends Configured implements Tool {
 			}
 		}
 
-		/*
-		 * TODO: write your second-pass Reducer here.
-		 */
 		@Override
 		protected void reduce(PairOfStrings key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			String word1 = key.getLeftElement();
+			String word2 = key.getRightElement();
+			
+			// Skip if we don't have frequencies for both words
+			if (!word_total_map.containsKey(word1) || !word_total_map.containsKey(word2)) {
+				return;
+			}
+			
+			// Sum up the pair frequency
+			int pairFreq = 0;
+			for (IntWritable value : values) {
+				pairFreq += value.get();
+			}
+			
+			// Get individual word frequencies
+			int freq1 = word_total_map.get(word1);
+			int freq2 = word_total_map.get(word2);
+			
+			// Calculate correlation: COR(A, B) = Freq(A, B) / (Freq(A) * Freq(B))
+			double correlation = (double) pairFreq / (freq1 * freq2);
+			
+			CORRELATION.set(correlation);
+			context.write(key, CORRELATION);
 		}
 	}
 

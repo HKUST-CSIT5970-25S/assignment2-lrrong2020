@@ -2,6 +2,8 @@ package hk.ust.csit5970;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
@@ -47,12 +49,23 @@ public class BigramFrequencyPairs extends Configured implements Tool {
 		@Override
 		public void map(LongWritable key, Text value, Context context)
 				throws IOException, InterruptedException {
-			String line = ((Text) value).toString();
-			String[] words = line.trim().split("\\s+");
+			String line = value.toString();
+			String[] tokens = line.trim().toLowerCase().split("\\s+");
 			
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			if (tokens.length < 2) return;
+			
+			for (int i = 0; i < tokens.length - 1; i++) {
+				BIGRAM.set(tokens[i], tokens[i+1]);
+				context.write(BIGRAM, ONE);
+				
+				// Also emit a special token to count occurrences of the first word
+				BIGRAM.set(tokens[i], "");
+				context.write(BIGRAM, ONE);
+			}
+			
+			// Don't forget the last word
+			BIGRAM.set(tokens[tokens.length-1], "");
+			context.write(BIGRAM, ONE);
 		}
 	}
 
@@ -60,17 +73,64 @@ public class BigramFrequencyPairs extends Configured implements Tool {
 	 * TODO: Write your reducer here.
 	 */
 	private static class MyReducer extends
-			Reducer<PairOfStrings, IntWritable, PairOfStrings, FloatWritable> {
+			Reducer<PairOfStrings, IntWritable, Text, Text> {
 
-		// Reuse objects.
-		private final static FloatWritable VALUE = new FloatWritable();
+		private final static Text WORD = new Text();
+		private final static Text VALUE = new Text();
+		private final Map<String, Integer> counts = new HashMap<String, Integer>();
+		private String prevWord = null;
 
 		@Override
 		public void reduce(PairOfStrings key, Iterable<IntWritable> values,
 				Context context) throws IOException, InterruptedException {
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			String firstWord = key.getLeftElement();
+			String secondWord = key.getRightElement();
+			
+			int sum = 0;
+			for (IntWritable value : values) {
+				sum += value.get();
+			}
+			
+			if (firstWord.equals(prevWord) || prevWord == null) {
+				// Still processing the same first word or this is the first word
+				if (secondWord.isEmpty()) {
+					// This is the total count for the first word
+					counts.put(firstWord, sum);
+				} else {
+					// This is a bigram count
+					WORD.set(firstWord + "\t" + secondWord);
+					double relativeFreq = (double) sum / counts.get(firstWord);
+					VALUE.set(String.valueOf(relativeFreq));
+					context.write(WORD, VALUE);
+				}
+			} else {
+				// New first word encountered
+				// First output the total count of the previous word
+				WORD.set(prevWord);
+				VALUE.set(String.valueOf((double) counts.get(prevWord)));
+				context.write(WORD, VALUE);
+				
+				// Reset counts and store the current word
+				counts.clear();
+				if (secondWord.isEmpty()) {
+					counts.put(firstWord, sum);
+				} else {
+					// Something is wrong - we should see the count first
+					LOG.warn("Expected count for " + firstWord + " but got a bigram instead");
+				}
+			}
+			
+			prevWord = firstWord;
+		}
+		
+		@Override
+		protected void cleanup(Context context) throws IOException, InterruptedException {
+			// Don't forget to output the last word's total count
+			if (prevWord != null) {
+				WORD.set(prevWord);
+				VALUE.set(String.valueOf((double) counts.get(prevWord)));
+				context.write(WORD, VALUE);
+			}
 		}
 	}
 	
@@ -81,9 +141,12 @@ public class BigramFrequencyPairs extends Configured implements Tool {
 		@Override
 		public void reduce(PairOfStrings key, Iterable<IntWritable> values,
 				Context context) throws IOException, InterruptedException {
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			int sum = 0;
+			for (IntWritable value : values) {
+				sum += value.get();
+			}
+			SUM.set(sum);
+			context.write(key, SUM);
 		}
 	}
 
@@ -168,8 +231,8 @@ public class BigramFrequencyPairs extends Configured implements Tool {
 
 		job.setMapOutputKeyClass(PairOfStrings.class);
 		job.setMapOutputValueClass(IntWritable.class);
-		job.setOutputKeyClass(PairOfStrings.class);
-		job.setOutputValueClass(FloatWritable.class);
+		job.setOutputKeyClass(Text.class);
+		job.setOutputValueClass(Text.class);
 
 		/*
 		 * A MapReduce program consists of three components: a mapper, a
