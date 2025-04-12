@@ -1,0 +1,5 @@
+====BigramFrePairs==== Mark: 0/2 [line 1: frequency 27.0 != 29.0]
+====BigramFreStripes==== Mark: 0/2 [line 1: frequency 27.0 != 29.0]
+====CorPairs==== Mark: 0/3 [line 0: words <['a', 'about', '0.09090909090909091']> != <['Above', 'Also', '1.0']>]
+====CorStrip==== Mark: 0/3 [line 0: words <['a', 'about', '0.09090909090909091']> != <['Above', 'Also', '1.0']>]
+====Total Mark: 0/10
